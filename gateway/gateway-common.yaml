@@ -1,0 +1,392 @@
+spring.cloud.loadbalancer.ribbon.enabled: false # disable ribbon. use ReactorLoadBalancerExchangeFilterFunction
+
+spring.cloud.gateway:
+  routes: 
+  - id: webhook-test1
+    uri: lb://webhook
+    predicates:
+    - Path=/webhook/**   
+    filters:
+    - RewritePath=/webhook/(?<uri>.*), /${uri}
+
+#========== Predicates ============== 
+
+# Before, After, Between
+  - id: hystrix-producer-event 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/hystrix-producer/**
+    - Between=2021-02-07T00:00:00+09:00[Asia/Seoul],2021-02-07T23:59:59+09:00[Asia/Seoul]
+    filters:
+    - RewritePath=/hystrix-producer/(?<segment>.*), /coffees/delay  # Rewrite rule
+    - PrefixPath=/api  #무조건 앞에 붙이는 문자열 
+  
+  - id: hystrix-producer-old
+    uri: lb://hystrix-producer
+    predicates: 
+    - Path=/api/coffees/**
+    - Before=2020-12-31T23:59:59+09:00[Asia/Seoul]
+
+  - id: hystrix-producer-new
+    # ex) /hystrix-producer/coffees/pass => <uri>/api/coffees/pass
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/hystrix-producer/**
+    - After=2021-01-01T00:00:00+09:00[Asia/Seoul]
+    filters:
+    - RewritePath=/hystrix-producer/(?<apiuri>.*), /${apiuri}  # 그룹갭처 '(?<group>pattern)', group명에 특수문자 쓰지 않기 
+    - PrefixPath=/api  #무조건 앞에 붙이는 문자열 
+
+# Predicates: Cookie
+  - id: hystrix-producer-cookie
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/cookie/**
+    - Cookie=LTPAToken,* 
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass  
+
+# Predicates: Header
+  - id: hystrix-producer-header 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/header/**
+    - Header=User-Agent, .+Chrome.*   #only chrome support
+    - Header=Host, ^scg.*         #only from host which start 'scg' 
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass    
+
+# Predicates: Host
+  - id: hystrix-producer-host 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/host/**
+    - Host=scg.**, **.myorg.com   #not regrexp, but Ant-style pattern(?, *. **).
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass
+
+# Predicates: Method
+  - id: hystrix-producer-method 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/method/**
+    - Method=Get,POST   # only allow Get, POST.
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass
+
+# Predicates: Query
+  - id: hystrix-producer-query 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/query/**
+    - Query=param, ^pass$   # param값이 정확히 pass일때만 routing 
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass
+
+# Predicates: Weight -> use it for canari deploy
+  - id: hystrix-producer-v1 
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/weight/**
+    - Weight=group1, 6 
+    filters: 
+    - RewritePath=/(.*), /api/coffees/no-pass
+  - id: hystrix-producer-v2
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/weight/**
+    - Weight=group1, 4
+    filters: 
+    - RewritePath=/(.*), /api/coffees/pass
+
+#========== GatewayFilter factories ============== 
+    
+# Request Header: Create
+  # watch console of consumer-0 POD 
+  - id: consumer-reqheader-create 
+    uri: lb://consumer
+    predicates:
+    - Path=/addreqheader/**
+    filters:
+    - RewritePath=/addreqheader/(?<msg>.*), /greeting/${msg}
+    - AddRequestHeader=x-req-msg, Happy
+
+  - id: consumer-reqheader-create2
+    uri: lb://consumer
+    predicates:
+    - Path=/addreqheader2/{greeting}
+    filters:
+    - AddRequestHeader=x-req-msg, {greeting}
+    - RewritePath=/.*/(?<msg>.*), /greeting/${msg} 
+
+# Request Header: Update
+  # /setreqheader/max-age=86400
+  - id: consumer-reqheader-update
+    uri: lb://consumer
+    predicates:
+    - Path=/setreqheader/{cache-control} 
+    filters: 
+    - RewritePath=/.*/(?<msg>.*), /greeting/${msg} 
+    - SetRequestHeader=cache-control, {cache-control}
+
+# Request Header: Delete
+  # /rmreqheader/x-removed-header
+  - id: consumer-reqheader-delete 
+    uri: lb://consumer 
+    predicates:
+    - Path=/rmreqheader/{rmheader}
+    filters:
+    - RewritePath=/.*/(?<header>.*), /greeting/${header}
+    - AddRequestHeader=x-removed-header, {rmheader}
+    - RemoveRequestHeader=x-removed-header
+
+# Response Header: Create
+  - id: consumer-resheader-create 
+    uri: lb://consumer
+    predicates:
+    - Path=/addresheader/{header}
+    filters: 
+    - RewritePath=/.*/(?<header>.*), /greeting/${header}
+    - AddResponseHeader=x-resheader-create, {header}
+
+# Response Header: Update
+  # /setcontenttype/text
+  - id: consumer-resheader-update
+    uri: lb://consumer 
+    predicates:
+    - Path=/setcontenttype/{content-type}
+    filters: 
+    - RewritePath=/.*/(?<type>.*), /greeting/${type}
+    - SetResponseHeader=Content-Type, {content-type}
+
+# Response Header: Delete
+  - id: consumer-resheader-delete
+    uri: lb://consumer 
+    predicates:
+    - Path=/rmresheader/{rmheader}
+    filters: 
+    - RewritePath=/.*/(?<header>.*), /greeting/${header}
+    - AddResponseHeader=x-header, {rmheader}
+    - AddResponseHeader=x-removed-header, x-header
+    - RemoveResponseHeader=x-header
+
+# Request Parameter: Create
+  # /addreqparam/hello -> /consumer/hello?svc=consumer&api=greeting 
+  #  -> http://{consumer}/greeting/hello 
+
+  - id: consumer-routes-by-query
+    uri: lb://consumer
+    predicates: 
+    - Path=/consumer/** 
+    - Query=svc, ^consumer$
+    - Query=api, ^greeting$
+    filters: 
+    - RewritePath=/.*/(?<msg>.*), /greeting/${msg}
+
+  - id: scg-reqparam-create
+    uri: lb://scg
+    predicates:
+    - Path=/addreqparam/**
+    filters:
+    - RewritePath=/.*/(?<param>.*), /consumer/${param}
+    - AddRequestParameter=svc, consumer 
+    - AddRequestParameter=api, greeting 
+
+# Request Parameter: Update - No SetRequestParameter. use AddRequestParameter
+  - id: consumer-reqparam-update 
+    uri: lb://scg
+    predicates: 
+    - Path=/setreqparam/**
+    - Query=api, ^greeting$   
+    filters:
+    - RewritePath=/.*/(?<msg>.*), /consumer/${msg} 
+    - AddRequestParameter=svc, consumer
+    - AddRequestParameter=api, greeting 
+
+# Request Parameter: Delete 
+  - id: consumer-reqparam-delete 
+    uri: lb://scg
+    predicates:
+    - Path=/rmreqparam/**
+    - Query=svc, webhook  
+    - Query=api, greeting
+    filters: 
+    - RewritePath=/.*/(?<msg>.*), /consumer/${msg} 
+    - RemoveRequestParameter=svc 
+    - AddRequestParameter=svc, consumer
+
+# PrefixPath
+  - id: prefixpath
+    uri: lb://hystrix-producer
+    predicates:
+    - Path=/prefixpath
+    filters: 
+    - RewritePath=/.*, /coffees/pass 
+    - PrefixPath=/api 
+
+# SetPath
+  # /setpath/hystrix/pass 
+  - id: setpath 
+    uri: lb://consumer
+    predicates:
+    - Path=/setpath/{api}/{param}
+    filters:
+    - SetPath=/{api}/{param}
+
+# StripPrefix
+  # /strip-prefix/webhook/greeting/HI -> /webhook/greeting/HI 
+  - id: strip-prefix
+    uri: lb://scg
+    predicates:
+    - Path=/strip-prefix/**
+    filters: 
+    - StripPrefix=1 
+
+# RedirctTo 
+  - id: redirect-to
+    uri: lb://consumer 
+    predicates:
+    - Path=/redirect
+    filters:
+    #- RedirectTo=302, http://{domain}   # 변수 받는건 안됨
+    - RedirectTo=302, http://google.com
+    
+# Retry
+  - id: consumer-retry 
+    uri: lb://consumer 
+    predicates: 
+    - Path=/retry
+    filters: 
+    - RewritePath=/.*, /greeting/hi-retry 
+    - name: Retry 
+      args: 
+        retries: 5              # 재시도 횟수 
+        statuses: BAD_GATEWAY, INTERNAL_SERVER_ERROR, SERVICE_UNAVAILABLE        
+        methods: GET, POST 
+        backoff: 
+          firstBackoff: 500ms   #첫번째 재시도는 실패 후 0.5초 후 수행  
+          maxBackoff: 2000ms    #재시도 간격 
+          factor: 10            #firstBackoff * (factor^retries)가 재시도 간격임. maxBackoff보다 클 수는 없음.   
+        #exceptions:             # Connect가 안되는 경우에만 retry
+        #- java.net.ConnectException
+    metadata:
+      connect-timeout: 1000     
+      response-timeout: 1000 
+
+# Timeout
+  - id: timeout 
+    uri: lb://consumer 
+    predicates: 
+    - Path=/timeout
+    filters: 
+    - RewritePath=/.*, /greeting/timeout
+    metadata:
+      connect-timeout: 1000     
+      response-timeout: 1000
+
+#Circuit Breaker
+  - id: consumer-circuit-breaker
+    uri: lb://consumer 
+    predicates: 
+    - Path=/cb/**
+    filters: 
+    - RewritePath=/.*/(?<param>.*), /delay/${param} 
+    - name: CircuitBreaker
+      args: 
+        name: mycb
+        fallbackUri: forward:/fallback    # fallback은 Circuit 상태와 상관 없이, fail조건에 해당된 경우 호출됨 
+    metadata:
+      connect-timeout: 2500
+      response-timeout: 2500
+
+# Dynamic routing using Custom GgatewayFilterFactory
+  # ref: https://github.com/spring-cloud/spring-cloud-gateway/issues/608#issuecomment-431852899
+  - id: dynamic-routing 
+    uri: lb://tbd
+    predicates: 
+    - Path=/*/**
+    filters: 
+    - StripPrefix=1
+    - name: UriHostPlaceholderFilter
+      args: 
+        order: 10001
+---
+spring.cloud.gateway:
+  filter:
+    remove-hop-by-hop:
+      headers:
+        - connection
+        - keep-alive
+        - x-real-ip
+
+  # http timeout
+  httpclient: 
+    connect-timeout: 3000
+    response-timeout: 3000ms   # or 3s
+  
+  # default filters 
+  default-filters: 
+  # Try /setpath/greeting/hey, Watch console of consumer-0 to check 'x-serviceid'.
+  - AddRequestHeader=x-serviceid, spring-gateway   
+
+  # GatewayFilterFactory sample 
+  - name: PreLogger
+    args:
+      baseMessage: PRE GATEWAYFILTER FACTORY 
+      logging: true 
+  - name: PostLogger
+    args: 
+      baseMessage: POST GATEWAYFILTER FACTORY
+      logging: true 
+
+  - name: CircuitBreaker
+    args: 
+      name: defaultCB
+      fallbackUri: forward:/fallback     
+
+---
+# Enable gateway Actuator: default is enabled
+# gateway endpoints: https://docs.spring.io/spring-cloud-gateway/docs/current/reference/html/#recap-the-list-of-all-endpoints
+management:
+  endpoint.gateway.enabled: true
+  #endpoint.restart.enabled: true
+---
+spring:
+  sleuth: 
+    sampler:
+      probability: 1.0
+  zipkin:
+    base-url: http://zipkin:9411
+---
+# Resilience4J configuration for Resilience4jConfig class
+# refer: https://resilience4j.readme.io/docs/circuitbreaker
+resilience4j:
+  circuitbreaker:
+    default:
+      # 최근 10개 요청 중 응답속도가 1초 초과한 비율이 70% 이상일때 Circuit Breaker OPEN
+      # 단, 5개 요청까지는 OPEN하지 않음. http timeout정책은 resilience.circuitbreaker.timeout 참조 
+      # slowCallDurationThreshold값은 http timeout시간보다 작아야 제대로 동작함. 크면, timeout이 먼저 발생하므로 의미가 없음.
+      slidingWindowType: COUNT_BASED           # default: COUNT_BASED 
+      slidingWindowSize: 10                    # default: 100
+      minimumNumberOfCalls: 5                  # default: 100
+      failureRateThreshold: 50                 # default: 50
+      waitDurationInOpenState: 30000           # default: 60000
+      slowCallDurationThreshold: 1000          # default: 60000
+      slowCallRateThreshold: 70                # default: 100
+      permittedNumberOfCallsInHalfOpenState: 5  #Circuit 상태가 HALF-OPEN일때 허용되는 요청 수. default: 10. 별로 안 중요
+
+    custom:
+      slidingWindowType: COUNT_BASED 
+      slidingWindowSize: 10
+      minimumNumberOfCalls: 5
+      failureRateThreshold: 60
+      waitDurationInOpenState: 10000
+      slowCallDurationThreshold: 2000  # slowCall* 조건에 해당되도 fallback 호출 안됨 
+      slowCallRateThreshold: 50
+  
+  #== http timeout 정책
+  # TimeLimiterConfig 없으면, spring.cloud.gateway.routes.metadata.response-timeout 적용됨
+  # metadata.response-timeout 없으면, spring.cloud.gateway.http-client.response-timeout 적용됨 
+  timeout: 
+    default: 2500
+    custom: 2000        
